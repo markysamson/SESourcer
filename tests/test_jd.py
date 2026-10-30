@@ -48,8 +48,9 @@ def test_queries_search_public_profile_pages_and_respect_the_limit():
     assert 3 <= len(queries) <= 6
     assert all(query.startswith("site:linkedin.com/in") for query in queries)
     assert any("London" in query for query in queries)
-    assert any('"senior product manager"' in query for query in queries)
-    assert any("Payments" in query for query in queries)
+    assert any("product manager" in query for query in queries)
+    assert any("Payments" in query or "Open banking" in query for query in queries)
+    assert all('"' not in query for query in queries)
     assert all("Senior Product Manager, Payments" not in query for query in queries)
     assert len(build_queries(brief, limit=1)) >= 3
 

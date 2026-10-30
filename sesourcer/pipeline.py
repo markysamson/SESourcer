@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sesourcer.jd import JobBrief, build_queries, parse_job
+from sesourcer.jd import JobBrief, build_queries, build_rescue_queries, parse_job
 from sesourcer.profiles import parse_profile
 from sesourcer.score import score_profile
 from sesourcer.search import gather
@@ -18,6 +18,16 @@ def run_search(job_text: str, notes: str, limit: int, page_title: str | None = N
     brief = parse_job(job_text, page_title=page_title, notes=notes or "")
     queries = build_queries(brief, limit)
     hits, warnings = gather(queries, limit)
+    if len(hits) < min(3, limit):
+        rescue = build_rescue_queries(brief)
+        extra, rescue_warnings = gather(rescue, limit, max_calls=3)
+        warnings.extend(rescue_warnings)
+        queries = queries + [q for q in rescue if q not in queries]
+        merged = {h.url: h for h in hits}
+        for hit in extra:
+            if hit.url not in merged or len(hit.snippet) > len(merged[hit.url].snippet):
+                merged[hit.url] = hit
+        hits = list(merged.values())
     scored = []
     for hit in hits:
         profile = parse_profile(hit.title, hit.url, hit.snippet)

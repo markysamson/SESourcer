@@ -46,16 +46,22 @@ class SearchHit:
     snippet: str
 
 
-def gather(queries: list[str], limit: int, sleep=time.sleep) -> tuple[list[SearchHit], list[str]]:
+def gather(
+    queries: list[str],
+    limit: int,
+    sleep=time.sleep,
+    max_calls: int | None = None,
+) -> tuple[list[SearchHit], list[str]]:
     """Run as few queries as needed and merge unique profile URLs."""
     warnings: list[str] = []
     found: dict[str, SearchHit] = {}
-    providers = [("duckduckgo", fetch_duckduckgo), ("bing", fetch_bing)]
+    providers = [("bing", fetch_bing), ("duckduckgo", fetch_duckduckgo)]
     provider_index = 0
     calls = 0
-    max_calls = 6 if limit >= 15 else 4 if limit >= 8 else 3
+    if max_calls is None:
+        max_calls = 6 if limit >= 15 else 4 if limit >= 8 else 3
     target = min(50, max(limit, int(limit * 1.4)))
-    delay = float(os.environ.get("SESOURCER_SEARCH_DELAY", "3.0"))
+    delay = float(os.environ.get("SESOURCER_SEARCH_DELAY", "1.2"))
 
     for query in queries:
         if len(found) >= target or calls >= max_calls:
@@ -63,15 +69,9 @@ def gather(queries: list[str], limit: int, sleep=time.sleep) -> tuple[list[Searc
         if calls:
             sleep(delay)
         calls += 1
-        hits, provider_index, stop = _fetch_with_backoff(
-            query, providers, provider_index, warnings, sleep
-        )
-        if stop and not found:
-            break
-        if stop:
-            warnings.append("Stopped early after the index rate-limited further searches.")
-            break
-        added = 0
+        hits, provider_index = _fetch_with_backoff(query, providers, provider_index, warnings, sleep)
+        if hits:
+            provider_index = 0
         for hit in hits:
             key = canonical_profile_url(hit.url)
             if not key:
@@ -79,13 +79,9 @@ def gather(queries: list[str], limit: int, sleep=time.sleep) -> tuple[list[Searc
             previous = found.get(key)
             if previous is None or len(hit.snippet) > len(previous.snippet):
                 found[key] = SearchHit(title=hit.title, url=key, snippet=hit.snippet)
-                if previous is None:
-                    added += 1
-        if added == 0 and hits == []:
-            continue
     if not found and not warnings:
         warnings.append("The public index returned no LinkedIn profile pages for these searches.")
-    return list(found.values()), warnings
+    return list(found.values()), _unique_warnings(warnings)
 
 
 def fetch_duckduckgo(query: str) -> list[SearchHit]:
@@ -97,41 +93,60 @@ def fetch_duckduckgo(query: str) -> list[SearchHit]:
 
 
 def fetch_bing(query: str) -> list[SearchHit]:
-    url = "https://www.bing.com/search?" + urlencode({"format": "rss", "count": "10", "q": query})
-    body = _get(url, accept="application/rss+xml, application/xml, text/xml, */*")
+    rss_url = "https://www.bing.com/search?" + urlencode({"format": "rss", "count": "15", "q": query})
+    body = _get(rss_url, accept="application/rss+xml, application/xml, text/xml, */*")
     if "captcha" in body.lower() or "unusual traffic" in body.lower():
         raise SearchBlocked("Bing asked for a browser check.")
     hits = parse_bing_rss(body)
-    # A degraded response drops the site: operator and returns unrelated pages.
-    if "<item>" in body.lower() and not hits:
-        raise SearchBlocked("Bing did not return profile pages for this search.")
-    return hits
+    if hits:
+        return hits
+    html_url = "https://www.bing.com/search?" + urlencode({"count": "15", "q": query})
+    html = _get(html_url)
+    if "captcha" in html.lower() or "unusual traffic" in html.lower():
+        raise SearchBlocked("Bing asked for a browser check.")
+    return parse_bing_html(html)
 
 
 def _fetch_with_backoff(query, providers, provider_index, warnings, sleep):
-    """Try the current index, wait and retry once, then move to the backup."""
-    attempts = 0
-    while attempts < 4:
-        attempts += 1
-        name, fetch = providers[provider_index]
-        try:
-            return _cached_fetch(name, fetch, query), provider_index, False
-        except SearchBlocked:
-            if attempts == 1:
-                warnings.append("A public index rate-limited the search. Waiting, then retrying.")
-                sleep(8)
-                continue
-            if provider_index + 1 < len(providers):
-                provider_index += 1
-                warnings.append("The first public index rate-limited the search, so a backup index was used.")
-                continue
-            warnings.append("Public indexes are rate-limiting searches. Wait a minute and try again.")
-            return [], provider_index, True
-        except SearchError as exc:
-            warnings.append(str(exc))
-            return [], provider_index, False
-    warnings.append("Public indexes are rate-limiting searches. Wait a minute and try again.")
-    return [], provider_index, True
+    """Try Bing first, then DuckDuckGo; keep going when a query simply has no matches."""
+    blocked: list[str] = []
+    for step in range(len(providers)):
+        index = (provider_index + step) % len(providers)
+        name, fetch = providers[index]
+        for attempt in range(2):
+            try:
+                hits = _cached_fetch(name, fetch, query)
+                return hits, index
+            except SearchBlocked as exc:
+                blocked.append(str(exc))
+                if name == "duckduckgo" and attempt == 0:
+                    sleep(5)
+                    continue
+                break
+            except SearchError as exc:
+                _warn_once(warnings, str(exc))
+                break
+        if step == 0 and len(providers) > 1:
+            _warn_once(warnings, "Trying a backup public index for this query.")
+    if blocked:
+        _warn_once(
+            warnings,
+            "Some indexes rate-limited or skipped this query. Other searches will still run.",
+        )
+    return [], provider_index
+
+
+def _warn_once(warnings: list[str], message: str) -> None:
+    if message and message not in warnings:
+        warnings.append(message)
+
+
+def _unique_warnings(warnings: list[str]) -> list[str]:
+    seen: list[str] = []
+    for item in warnings:
+        if item and item not in seen:
+            seen.append(item)
+    return seen
 
 
 def parse_duckduckgo_html(html: str) -> list[SearchHit]:
@@ -163,6 +178,51 @@ def parse_duckduckgo_html(html: str) -> list[SearchHit]:
         seen.add(url)
         hits.append(SearchHit(title=title, url=url, snippet=snippet))
     return hits
+
+
+def parse_bing_html(html: str) -> list[SearchHit]:
+    hits: list[SearchHit] = []
+    seen: set[str] = set()
+    blocks = re.findall(
+        r'<li class="b_algo".*?(?=<li class="b_algo"|<li class="b_pag"|$)',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for block in blocks:
+        url = _bing_block_url(block)
+        if not url or url in seen:
+            continue
+        title_match = re.search(r"<h2[^>]*>(.*?)</h2>", block, flags=re.IGNORECASE | re.DOTALL)
+        title = decode_text(re.sub(r"<[^>]+>", " ", title_match.group(1))) if title_match else ""
+        snippet_match = re.search(
+            r'class="b_caption"[^>]*>.*?<p[^>]*>(.*?)</p>',
+            block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        snippet = decode_text(re.sub(r"<[^>]+>", " ", snippet_match.group(1))) if snippet_match else ""
+        seen.add(url)
+        hits.append(SearchHit(title=title, url=url, snippet=snippet))
+    return hits
+
+
+def _bing_block_url(block: str) -> str | None:
+    for match in re.finditer(r"u=a1([A-Za-z0-9_\-]{8,})", block):
+        raw = match.group(1)
+        pad = "=" * ((4 - len(raw) % 4) % 4)
+        try:
+            import base64
+
+            decoded = base64.b64decode(raw + pad).decode()
+        except Exception:
+            continue
+        canonical = canonical_profile_url(decoded)
+        if canonical:
+            return canonical
+    for match in re.finditer(r"https?://[\w.]*linkedin\.com/in/[\w\-_%]+", block, flags=re.IGNORECASE):
+        canonical = canonical_profile_url(match.group(0))
+        if canonical:
+            return canonical
+    return None
 
 
 def parse_bing_rss(xml: str) -> list[SearchHit]:

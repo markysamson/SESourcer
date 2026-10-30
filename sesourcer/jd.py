@@ -183,58 +183,89 @@ def note_terms(notes: str) -> list[str]:
 
 
 def build_queries(brief: JobBrief, limit: int) -> list[str]:
-    """A short set of public-index queries. Varied on purpose, still specific."""
-    title = _search_title(brief).replace('"', "").strip()
+    """Queries tuned for public indexes (unquoted terms; seniority is scored, not searched)."""
+    role = _index_role(brief)
     place = brief.locations[0] if brief.locations else (brief.countries[0] if brief.countries else "")
     if brief.remote and not brief.locations:
         place = "Remote"
-    skills = _query_skills(brief)
+    skills = _index_skills(_query_skills(brief))
     queries: list[str] = []
 
-    def add(parts: list[str]) -> None:
+    def add(*parts: str) -> None:
         query = " ".join(part for part in parts if part and part.strip())
         query = " ".join(query.split())
-        if query not in queries:
+        if query.count(" ") >= 2 and query not in queries:
             queries.append(query)
 
-    primary = ["site:linkedin.com/in", f'"{title}"']
-    if skills:
-        primary.append(f'"{skills[0]}"' if " " in skills[0] else skills[0])
-    if place:
-        primary.append(f'"{place}"' if " " in place else place)
-    add(primary)
-
-    if len(skills) >= 2:
-        extra = ["site:linkedin.com/in", f'"{title}"', skills[1]]
-        if len(skills) >= 3:
-            extra.append(skills[2])
-        if place:
-            extra.append(place)
-        add(extra)
-
+    # Public indexes work best with role + one skill + place (not several skills at once).
+    for skill in skills[:4]:
+        add("site:linkedin.com/in", role, skill, place)
+    add("site:linkedin.com/in", role, place)
     for alternate in brief.alternate_titles[:2]:
-        add(["site:linkedin.com/in", f'"{alternate}"', skills[0] if skills else "", place])
-
-    if brief.seniority and brief.function and brief.seniority not in brief.function:
-        add(
-            [
-                "site:linkedin.com/in",
-                f'"{brief.seniority} {brief.function}"',
-                skills[0] if skills else "",
-                place,
-            ]
-        )
-
+        for skill in skills[:2] or [""]:
+            add("site:linkedin.com/in", alternate, skill, place)
     if brief.note_terms:
-        add(["site:linkedin.com/in", f'"{title}"', *brief.note_terms[:3], place])
+        add("site:linkedin.com/in", role, brief.note_terms[0], place)
+    if brief.seniority and brief.function:
+        add("site:linkedin.com/in", f"{brief.seniority} {brief.function}", skills[0] if skills else "", place)
 
-    # A looser query catches profiles whose headline uses a shorter title.
-    loose = ["site:linkedin.com/in", title]
-    if place:
-        loose.append(place)
-    add(loose)
+    return queries[: _query_budget(limit)]
 
-    return queries[:_query_budget(limit)]
+
+def build_rescue_queries(brief: JobBrief) -> list[str]:
+    """Broader queries when stricter ones return nothing."""
+    role = _index_role(brief)
+    place = brief.locations[0] if brief.locations else ""
+    skills = _index_skills(brief.must_have)
+    queries: list[str] = []
+    for skill in skills[:3]:
+        query = " ".join(p for p in ("site:linkedin.com/in", role, skill, place) if p)
+        if query.count(" ") >= 2 and query not in queries:
+            queries.append(query)
+    for parts in (
+        ("site:linkedin.com/in", role, "Python", place),
+        ("site:linkedin.com/in", role, "SQL", place),
+        ("site:linkedin.com/in", "software engineer", "Python", place),
+    ):
+        query = " ".join(p for p in parts if p)
+        if query not in queries and query.count(" ") >= 2:
+            queries.append(query)
+    return queries[:4]
+
+
+_INDEX_SKILL_PRIORITY = (
+    "python",
+    "java",
+    "javascript",
+    "typescript",
+    "react",
+    "sql",
+    "postgresql",
+    "aws",
+    "kubernetes",
+    "docker",
+    "node.js",
+    "golang",
+    "rust",
+    "payments",
+    "fintech",
+)
+
+
+def _index_skills(skills: list[str]) -> list[str]:
+    """Order skills for search queries (indexes tolerate some tokens better than others)."""
+    if not skills:
+        return []
+
+    def rank(skill: str) -> tuple[int, int]:
+        lowered = skill.lower()
+        try:
+            priority = _INDEX_SKILL_PRIORITY.index(lowered)
+        except ValueError:
+            priority = len(_INDEX_SKILL_PRIORITY)
+        return (priority, len(skill.split()))
+
+    return sorted(skills, key=rank)
 
 
 _GENERIC_QUERY_SKILLS = {
@@ -261,6 +292,16 @@ def _search_title(brief: JobBrief) -> str:
             title = f"{brief.seniority} {title}"
         return title
     return brief.title.split(",")[0].strip()
+
+
+def _index_role(brief: JobBrief) -> str:
+    """Role phrase for search indexes — function only, no seniority prefix."""
+    if brief.function:
+        return brief.function
+    title = brief.title.split(",")[0].strip()
+    if brief.seniority:
+        title = re.sub(rf"^{re.escape(brief.seniority)}\s+", "", title, flags=re.I)
+    return title.strip() or brief.title.split(",")[0].strip()
 
 
 def _query_skills(brief: JobBrief) -> list[str]:

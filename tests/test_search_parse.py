@@ -1,7 +1,7 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
-from sesourcer.search import fetch_duckduckgo, parse_bing_rss, parse_duckduckgo_html
+from sesourcer.search import fetch_bing, fetch_duckduckgo, parse_bing_rss, parse_duckduckgo_html
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ddg.html"
 
@@ -35,6 +35,17 @@ def test_bing_rss_ignores_non_profile_links():
     hits = parse_bing_rss(xml)
     assert len(hits) == 1
     assert hits[0].url == "https://www.linkedin.com/in/jane-doe"
+
+
+def test_bing_empty_rss_does_not_raise(monkeypatch):
+    def fake_get(url, accept="text/html"):
+        if "format=rss" in url:
+            return """<rss><channel><item><title>Example</title><link>https://example.com/x</link><description>x</description></item></channel></rss>"""
+        return "<html><body><li class=\"b_algo\"><h2><a>Test</a></h2></li></body></html>"
+
+    monkeypatch.setattr("sesourcer.search._get", fake_get)
+    monkeypatch.setenv("SESOURCER_NO_CACHE", "1")
+    assert fetch_bing("site:linkedin.com/in example query") == []
 
 
 def test_duckduckgo_fetch_never_calls_linkedin(monkeypatch):
