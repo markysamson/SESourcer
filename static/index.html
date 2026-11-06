@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SESourcer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,650&family=Figtree:wght@400;520;650&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <header class="mast">
+      <div class="mast-inner">
+        <p class="mark">SE</p>
+        <div>
+          <h1>SESourcer</h1>
+          <p class="lede">
+            Paste a role. Get a scored shortlist of people whose public profiles match it.
+          </p>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <form id="search-form" class="brief">
+        <div class="field">
+          <label for="job-url">Job link</label>
+          <input
+            id="job-url"
+            name="job_url"
+            type="url"
+            inputmode="url"
+            placeholder="https://company.com/jobs/senior-product-manager"
+            autocomplete="off"
+          />
+        </div>
+        <div class="field">
+          <div class="label-row">
+            <label for="job-text">Job description</label>
+            <button type="button" class="text-button" id="sample">Use a sample brief</button>
+          </div>
+          <textarea
+            id="job-text"
+            name="job_text"
+            rows="12"
+            placeholder="Paste the role here, or leave this empty and use a link above."
+          ></textarea>
+        </div>
+        <div class="split">
+          <div class="field">
+            <label for="notes">Notes for the search</label>
+            <textarea
+              id="notes"
+              name="notes"
+              rows="3"
+              placeholder="Optional. Example: must have worked at a UK bank. Payments experience matters more than a big-tech logo."
+            ></textarea>
+          </div>
+          <div class="field limit-field">
+            <label for="limit">Candidates</label>
+            <input id="limit" name="limit" type="number" min="1" max="50" value="20" />
+            <p class="hint">Default is 20. Maximum is 50.</p>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="submit" class="primary" id="submit">Search candidates</button>
+          <p id="status" class="status" role="status" aria-live="polite"></p>
+        </div>
+        <p class="fine">
+          Search uses public web results for LinkedIn profile pages. It does not sign in to LinkedIn
+          or try to bypass LinkedIn. A search can take up to a minute.
+        </p>
+      </form>
+
+      <section id="results" class="results" hidden>
+        <div class="results-head">
+          <div>
+            <h2 id="results-title">Shortlist</h2>
+            <p id="results-meta" class="meta"></p>
+          </div>
+          <button type="button" class="secondary" id="download" hidden>Download CSV</button>
+        </div>
+        <div id="warnings" class="warnings" hidden></div>
+        <div id="reading" class="reading" hidden></div>
+        <div class="table-wrap">
+          <table>
+            <caption class="sr-only">Candidates scored for the role</caption>
+            <thead>
+              <tr>
+                <th scope="col"><button type="button" data-sort="score">Score</button></th>
+                <th scope="col"><button type="button" data-sort="name">Name</button></th>
+                <th scope="col"><button type="button" data-sort="role">Role</button></th>
+                <th scope="col"><button type="button" data-sort="location">Location</button></th>
+                <th scope="col"><button type="button" data-sort="company">Company</button></th>
+                <th scope="col">Tenure</th>
+                <th scope="col">Relevant skills</th>
+                <th scope="col">Profile</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <p id="source-note" class="fine"></p>
+        <details id="query-details" class="queries">
+          <summary>Searches used</summary>
+          <ul id="query-list"></ul>
+        </details>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
