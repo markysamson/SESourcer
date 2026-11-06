@@ -479,7 +479,7 @@ def _scan_place(text: str, add_city, add_country, short_aliases: bool) -> None:
             city = canonical_city(key)
             if city:
                 add_city(city)
-    for key in ("united kingdom", "united states", "great britain", "u.k.", "u.s."):
+    for key in ("united kingdom", "united states", "great britain", "u.k.", "u.s.", "the netherlands", "netherlands"):
         if contains_term(lowered, key):
             add_country(key)
     if short_aliases:

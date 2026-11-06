@@ -7,11 +7,13 @@ from dataclasses import dataclass
 
 from sesourcer.jd import JobBrief
 from sesourcer.lexicon import (
-    RELATED_TOKENS,
+    COUNTRY_ALIASES,
+    COUNTRY_DISPLAY,
     ROLE_STOP,
     SENIORITY_RANK,
     SENIORITY_WORDS,
     TOKEN_SYNONYMS,
+    canonical_country,
     contains_term,
     country_of_city,
 )
@@ -37,7 +39,7 @@ class ScoredProfile:
 
 
 def score_profile(profile: Profile, brief: JobBrief) -> ScoredProfile:
-    role_ratio = _role_ratio(brief.title, profile.role, profile.headline)
+    role_ratio = _role_ratio(brief, profile.role, profile.headline)
     matched, missing, skill_ratio = _skill_ratio(profile, brief)
     location_ratio, location_note = _location_ratio(profile, brief)
     seniority_ratio, seniority_note = _seniority_ratio(profile, brief)
@@ -60,7 +62,10 @@ def score_profile(profile: Profile, brief: JobBrief) -> ScoredProfile:
     }
     total = min(100, sum(breakdown.values()))
     capped = total
-    if brief.locations and profile.location and not brief.remote:
+    strict_place = _location_strict(brief)
+    if strict_place and location_ratio < 1.0:
+        capped = min(total, 42)
+    elif brief.locations and profile.location and not brief.remote and not strict_place:
         if location_ratio <= 0.2:
             capped = min(total, 64)
         elif location_ratio < 0.7:
@@ -118,24 +123,37 @@ def _tokens(text: str) -> set[str]:
     return tokens
 
 
-def _role_ratio(wanted: str, role: str, headline: str) -> float:
-    wanted_tokens = _tokens(wanted)
+def _role_ratio(brief: JobBrief, role: str, headline: str) -> float:
+    wanted_phrase = (brief.function or brief.title).strip().lower()
+    blob = f"{role} {headline}".lower()
+    if wanted_phrase and wanted_phrase in blob:
+        return 0.95
+    wanted_tokens = _tokens(brief.title)
+    core = _role_core_tokens(brief)
+    if core:
+        wanted_tokens |= core
     if not wanted_tokens:
-        return 0.5
+        return 0.45
     observed = _tokens(f"{role} {headline}")
     if not observed:
-        return 0.2
+        return 0.18
     overlap = wanted_tokens & observed
-    ratio = len(overlap) / len(wanted_tokens)
-    if wanted.lower().strip() and wanted.lower().strip() in f"{role} {headline}".lower():
-        ratio = max(ratio, 0.95)
-    missing = wanted_tokens - observed
-    extra = observed - wanted_tokens
-    for left in missing:
-        for right in extra:
-            if frozenset({left, right}) in RELATED_TOKENS:
-                return min(1.0, ratio + 0.2)
-    return max(0.0, min(1.0, ratio))
+    token_ratio = len(overlap) / len(wanted_tokens)
+    if core:
+        core_overlap = core & observed
+        core_ratio = len(core_overlap) / len(core)
+        blended = 0.72 * core_ratio + 0.28 * token_ratio
+    else:
+        blended = token_ratio
+    return max(0.0, min(1.0, blended))
+
+
+def _role_core_tokens(brief: JobBrief) -> set[str]:
+    if not brief.function:
+        return set()
+    raw = brief.function.lower()
+    parts = re.split(r"[\s/]+", raw)
+    return {TOKEN_SYNONYMS.get(p, p) for p in parts if p and p not in ROLE_STOP and p not in _LEVEL_ONLY}
 
 
 def _skill_ratio(profile: Profile, brief: JobBrief) -> tuple[list[str], list[str], float]:
@@ -156,35 +174,108 @@ def _skill_ratio(profile: Profile, brief: JobBrief) -> tuple[list[str], list[str
 
 
 def _location_ratio(profile: Profile, brief: JobBrief) -> tuple[float, str]:
-    if not brief.locations and not brief.countries and not brief.remote:
+    wanted_countries = _wanted_countries(brief)
+    strict = _location_strict(brief)
+
+    if not brief.locations and not wanted_countries and not brief.remote:
         return 1.0, "The role does not name a place."
+
     if not profile.location:
+        if strict and wanted_countries:
+            return (
+                0.08,
+                "Location is not in the public snippet. This role is tied to a specific country, so that gap counts heavily.",
+            )
         if brief.remote:
             return 0.7, "Location is not in the public snippet. The role allows remote work."
         return 0.45, "Location is not in the public snippet."
+
     profile_place = profile.location.lower()
+    profile_country = country_of_city(profile.location) or _country_from_text(profile.location)
+
     if profile_place == "remote":
+        if strict and wanted_countries:
+            return (
+                0.12,
+                "Profile only says remote with no country. This role expects people in "
+                f"{_country_phrase(wanted_countries)}.",
+            )
         if brief.remote or brief.hybrid:
             return 0.85, "Profile says remote, which fits this role."
         return 0.35, "Profile says remote and the role names an office."
+
     wanted_cities = [city.lower() for city in brief.locations]
     if profile_place in wanted_cities:
         return 1.0, f"Location matches {profile.location}."
-    profile_country = country_of_city(profile.location)
-    wanted_countries = {country.lower() for country in brief.countries}
-    for city in brief.locations:
-        country = country_of_city(city)
-        if country:
-            wanted_countries.add(country)
-    if profile_country and profile_country in wanted_countries:
-        if brief.remote:
-            return 0.8, f"Location is {profile.location}. The role is remote, so another city in the right country still works."
-        return 0.4, f"Location is {profile.location}, in the right country but not the city asked for."
+
+    if wanted_countries:
+        if profile_country and profile_country in wanted_countries:
+            # Country-level role (e.g. "Netherlands"): any city in that country is a full match.
+            city_named = bool(
+                brief.locations
+                and wanted_cities
+                and not any(c.lower() in _country_alias_keys() for c in brief.locations)
+            )
+            if city_named and profile_place in wanted_cities:
+                return 1.0, f"Location matches {profile.location}."
+            if city_named and profile_place not in wanted_cities:
+                return (
+                    1.0,
+                    f"{profile.location} is in {_country_phrase({profile_country})} as required "
+                    f"(city in the posting was indicative, not exclusive).",
+                )
+            return 1.0, f"Location is in {_country_phrase({profile_country})} as required."
+
+        if profile_country and profile_country not in wanted_countries:
+            return (
+                0.0,
+                f"Location is {profile.location} — outside {_country_phrase(wanted_countries)}.",
+            )
+        return (
+            0.15,
+            f"Could not confirm {profile.location} is in {_country_phrase(wanted_countries)} from the snippet.",
+        )
+
     if any(country.lower() == profile_place for country in brief.countries):
         return 0.7, f"Location matches {profile.location}."
     if brief.remote:
         return 0.7, f"Location is {profile.location}. The role is remote, so this is still possible."
     return 0.12, f"Location is {profile.location}, which does not match the role."
+
+
+def _wanted_countries(brief: JobBrief) -> set[str]:
+    out = {c.lower() for c in brief.countries}
+    for city in brief.locations:
+        country = country_of_city(city)
+        if country:
+            out.add(country)
+    return out
+
+
+def _location_strict(brief: JobBrief) -> bool:
+    """True when the posting names a country (or only a country) so we gate cross-border matches."""
+    return bool(_wanted_countries(brief))
+
+
+def _country_from_text(text: str) -> str | None:
+    lowered = text.lower()
+    for key in sorted(COUNTRY_ALIASES, key=len, reverse=True):
+        if contains_term(lowered, key):
+            canonical = canonical_country(key)
+            if canonical:
+                return canonical.lower()
+    return None
+
+
+def _country_phrase(countries: set[str]) -> str:
+    if not countries:
+        return "the target region"
+    display = {COUNTRY_DISPLAY.get(c, c.title()) for c in countries}
+    return ", ".join(sorted(display))
+
+
+def _country_alias_keys() -> set[str]:
+    return {key.lower() for key in COUNTRY_ALIASES}
 
 
 def _seniority_ratio(profile: Profile, brief: JobBrief) -> tuple[float, str]:

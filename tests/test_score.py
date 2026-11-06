@@ -76,3 +76,48 @@ def test_notes_change_the_score():
     )
     assert with_note.score > without.score
     assert "Monzo" in with_note.rationale
+
+
+def test_netherlands_role_rejects_non_dutch_locations():
+    brief = parse_job(
+        "Product Manager\n"
+        "The Netherlands\n\n"
+        "Requirements\n"
+        "- SQL\n"
+    )
+    local = parse_profile(
+        "Jan - Product Manager | LinkedIn",
+        "https://www.linkedin.com/in/jan",
+        "Product Manager · Location: Amsterdam · SQL.",
+    )
+    abroad = parse_profile(
+        "Sam - Product Manager | LinkedIn",
+        "https://www.linkedin.com/in/sam",
+        "Product Manager · Location: London · SQL.",
+    )
+    s_local = score_profile(local, brief)
+    s_abroad = score_profile(abroad, brief)
+    assert s_local.breakdown["location"] == 15
+    assert s_abroad.breakdown["location"] == 0
+    assert s_local.score > s_abroad.score
+
+
+def test_wrong_function_scores_below_right_function():
+    brief = parse_job(
+        "Data Engineer\n"
+        "Netherlands\n"
+        "Requirements\n"
+        "- Python\n"
+        "- SQL\n"
+    )
+    engineer = parse_profile(
+        "Alex - Data Engineer | LinkedIn",
+        "https://www.linkedin.com/in/alex-de",
+        "Data Engineer · Location: Rotterdam · Python, SQL.",
+    )
+    pm = parse_profile(
+        "Alex - Product Manager | LinkedIn",
+        "https://www.linkedin.com/in/alex-pm",
+        "Product Manager · Location: Rotterdam · SQL, stakeholder management.",
+    )
+    assert score_profile(engineer, brief).score > score_profile(pm, brief).score
