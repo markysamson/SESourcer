@@ -1,7 +1,14 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
-from sesourcer.search import fetch_bing, fetch_duckduckgo, parse_bing_rss, parse_duckduckgo_html
+from sesourcer.search import (
+    SearchHit,
+    _fetch_with_backoff,
+    fetch_bing,
+    fetch_duckduckgo,
+    parse_bing_rss,
+    parse_duckduckgo_html,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ddg.html"
 
@@ -62,3 +69,24 @@ def test_duckduckgo_fetch_never_calls_linkedin(monkeypatch):
     assert requested
     assert all(urlparse(url).hostname != "www.linkedin.com" for url in requested)
     assert all("linkedin.com" not in (urlparse(url).hostname or "") for url in requested)
+
+
+def test_fallback_when_bing_returns_no_profiles(monkeypatch):
+    """If the first index returns HTML with no LinkedIn hits, try the backup."""
+
+    def fetch_bing_spy(_query):
+        return []
+
+    def fetch_ddg_spy(_query):
+        return [SearchHit(title="X", url="https://www.linkedin.com/in/jane-doe", snippet="Test snippet")]
+
+    providers = [("bing", fetch_bing_spy), ("duckduckgo", fetch_ddg_spy)]
+    monkeypatch.setattr(
+        "sesourcer.search._cached_fetch",
+        lambda name, fetch, q: fetch(q),
+    )
+    warnings: list[str] = []
+
+    hits, _index = _fetch_with_backoff("test query", providers, 0, warnings, lambda _: None)
+    assert len(hits) == 1
+    assert "backup index" in " ".join(warnings).lower()

@@ -108,7 +108,7 @@ def fetch_bing(query: str) -> list[SearchHit]:
 
 
 def _fetch_with_backoff(query, providers, provider_index, warnings, sleep):
-    """Try Bing first, then DuckDuckGo; keep going when a query simply has no matches."""
+    """Try each index until one returns profile hits or all fail / block."""
     blocked: list[str] = []
     for step in range(len(providers)):
         index = (provider_index + step) % len(providers)
@@ -116,7 +116,6 @@ def _fetch_with_backoff(query, providers, provider_index, warnings, sleep):
         for attempt in range(2):
             try:
                 hits = _cached_fetch(name, fetch, query)
-                return hits, index
             except SearchBlocked as exc:
                 blocked.append(str(exc))
                 if name == "duckduckgo" and attempt == 0:
@@ -126,14 +125,25 @@ def _fetch_with_backoff(query, providers, provider_index, warnings, sleep):
             except SearchError as exc:
                 _warn_once(warnings, str(exc))
                 break
-        if step == 0 and len(providers) > 1:
-            _warn_once(warnings, "Trying a backup public index for this query.")
+            else:
+                if hits:
+                    return hits, index
+                break
+        if step + 1 < len(providers) and _has_backup(providers, step):
+            _warn_once(
+                warnings,
+                "The first public index had no LinkedIn profiles for this query; trying a backup index.",
+            )
     if blocked:
         _warn_once(
             warnings,
             "Some indexes rate-limited or skipped this query. Other searches will still run.",
         )
     return [], provider_index
+
+
+def _has_backup(providers, step: int) -> bool:
+    return step == 0 and len(providers) > 1
 
 
 def _warn_once(warnings: list[str], message: str) -> None:
